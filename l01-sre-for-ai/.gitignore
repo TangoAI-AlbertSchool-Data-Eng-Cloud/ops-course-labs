@@ -1,0 +1,3 @@
+# Holds API keys and port choices: never committed.
+.env
+__pycache__/

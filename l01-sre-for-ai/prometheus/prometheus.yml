@@ -1,0 +1,28 @@
+# Prometheus: what to collect, how often, and which rules to evaluate.
+
+global:
+  # Every target is read every 5 seconds. Real platforms often use 15-60 s;
+  # the lab is faster so that an incident shows within a minute.
+  scrape_interval: 5s
+  # Recording and alerting rules are evaluated every 15 seconds.
+  evaluation_interval: 15s
+
+# The SLIs, error budgets and burn-rate alerts.
+rule_files:
+  - rules.yml
+
+scrape_configs:
+  # The HTTP services serve /metrics on their own port, 8000.
+  - job_name: services
+    static_configs:
+      - targets: ["gateway:8000", "drafter:8000"]
+
+  # The workers have no API, so they serve /metrics on a port of their own.
+  - job_name: workers
+    static_configs:
+      - targets: ["triage:9100", "report:9100"]
+
+  # The simulated world: customers, agents, the dispatch desk, the clock.
+  - job_name: world
+    static_configs:
+      - targets: ["world:9100"]
