@@ -50,7 +50,9 @@ def draft(body: Request):
     if degradation_level() < 2:
         prompt = f"ISSUE: {issue}\nCOMPLAINT:\n{record['narrative'][:4000]}"
         try:
-            text = llm.call(client, "drafter", SYSTEM, prompt, max_tokens=400)
+            # Room for thinking and a whole letter: a cut-off letter raises
+            # llm.Truncated and gets the template, never half a reply.
+            text = llm.call(client, "drafter", SYSTEM, prompt, max_tokens=1536)
             source = "llm"
         except Exception:  # noqa: BLE001 - any LLM failure falls back to the template
             text = None

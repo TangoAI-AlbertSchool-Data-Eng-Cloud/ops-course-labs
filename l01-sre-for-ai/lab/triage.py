@@ -78,11 +78,14 @@ def read_with_llm(client, narrative: str) -> dict | None:
     system, names = PROMPTS["v2" if fault_on("triage-v2") else "v1"]   # which release is live
     for _ in range(1 + INVALID_RETRIES):
         # The complaint goes in as the user message, the instructions as the system prompt.
-        text = llm.call(client, "triage", system, narrative, max_tokens=300)
         try:
+            # 1,024 tokens: room for a thinking model's reasoning before the
+            # JSON. At 300, Claude Haiku 5.5 was cut off on 3 attempts in 4.
+            text = llm.call(client, "triage", system, narrative, max_tokens=1024)
             record = validate(json.loads(text), names)
         except (json.JSONDecodeError, ValueError):
-            # Not JSON, or JSON that fails validation: try again, paying again.
+            # Cut off (llm.Truncated is a ValueError), not JSON, or JSON that
+            # fails validation: try again, paying again.
             ATTEMPTS.labels("invalid").inc()
             continue
         ATTEMPTS.labels("valid").inc()

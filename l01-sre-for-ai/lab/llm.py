@@ -23,8 +23,17 @@ CALLS = Counter("llm_requests_total", "LLM calls made by our code",
                 ["service", "model", "outcome"])
 TOKENS = Counter("llm_tokens_total", "Tokens billed", ["service", "model", "direction"])
 COST = Counter("llm_cost_usd_total", "What the calls cost, in USD", ["service", "model"])
+# Why the model stopped writing: "end_turn" when it had finished,
+# "max_tokens" when our cap cut it off. A model that thinks before it answers
+# (Claude Haiku 5.5 does, by default) spends part of the cap on thinking.
+STOPS = Counter("llm_stop_reasons_total", "Why the model stopped writing",
+                ["service", "model", "reason"])
 DURATION = Histogram("llm_request_duration_seconds", "Time for one LLM call, retries included",
                      ["service", "model"], buckets=(0.25, 0.5, 1, 2, 4, 8, 16, 32))
+
+
+class Truncated(ValueError):
+    """The answer was cut off by `max_tokens`: half a JSON object, half a letter."""
 
 
 def client(timeout: float) -> anthropic.Anthropic:
@@ -59,4 +68,10 @@ def call(llm: anthropic.Anthropic, service: str, system: str, prompt: str, max_t
     TOKENS.labels(service, MODEL, "output").inc(used_out)
     COST.labels(service, MODEL).inc(
         (used_in * PRICE_PER_MTOK["input"] + used_out * PRICE_PER_MTOK["output"]) / 1_000_000)
+    # Counted: without it, a cut-off answer looks like a bad one.
+    reason = message.stop_reason or "unknown"
+    STOPS.labels(service, MODEL, reason).inc()
+    if reason == "max_tokens":
+        raise Truncated(f"cut off at max_tokens={max_tokens}")
+    # Only the text blocks: a thinking model's reply starts with a thinking block.
     return "".join(block.text for block in message.content if block.type == "text")
