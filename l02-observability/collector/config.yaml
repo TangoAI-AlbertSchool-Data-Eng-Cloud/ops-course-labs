@@ -1,0 +1,70 @@
+# The OpenTelemetry collector: every service sends its traces and logs here,
+# and only here. Where they go next is decided in this file, not in the code:
+# changing the trace backend means editing this file, not six services.
+#
+#   receivers  -> how telemetry arrives (OTLP, over HTTP or gRPC)
+#   processors -> what is done to it on the way (limits, batching, filtering)
+#   exporters  -> where it goes (Tempo, Loki, Phoenix)
+#   pipelines  -> which receivers feed which processors and exporters
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318   # the services use this one
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # Refuse data before the collector runs out of memory, instead of crashing.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 200
+  # Send in batches: fewer, larger requests to each backend.
+  batch:
+    timeout: 2s
+  # Phoenix is for LLM work: keep only the spans the Anthropic
+  # instrumentation wrote (they carry an `openinference.span.kind`).
+  filter/llm-only:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["openinference.span.kind"] == nil'
+
+exporters:
+  # Every span, to Tempo (traces), over gRPC.
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true            # inside the lab's network; never across the internet
+  # The LLM spans, to Phoenix, over HTTP.
+  otlp_http/phoenix:
+    endpoint: http://phoenix:6006
+  # Every log record, to Loki, which accepts OTLP natively.
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_grpc/tempo]
+    traces/llm:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/llm-only, batch]
+      exporters: [otlp_http/phoenix]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/loki]
+  # The collector's own metrics (spans received, sent, refused), for
+  # Prometheus on :8888: observability has a cost, and this is its meter.
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888

@@ -1,0 +1,193 @@
+# The complaint-handling platform and its monitoring, on one laptop.
+#
+#   docker compose up -d --build     start everything (first build: a few minutes)
+#   docker compose ps                what is running
+#   docker compose logs -f triage    follow one service's logs
+#   docker compose down              stop everything (add -v to forget the data)
+#
+# Open: Grafana http://localhost:3000, Prometheus http://localhost:9090,
+#       the gateway's API http://localhost:8400/docs
+#
+# A port already used on your machine? Set another in a `.env` file next to
+# this one, e.g. GRAFANA_PORT=3300, then `docker compose up -d` again.
+
+# Every Python service is built from the same image and differs only by its
+# command. The `x-` block is not a service: it is reused below with `<<: *python`.
+x-python: &python
+  build: .                  # the Dockerfile in this folder
+  image: oais-lab:l02       # built once, run by six containers
+  # Named `&env` so a service that adds its own variables (world) keeps these:
+  # a service's own `environment:` would otherwise replace the whole block.
+  environment: &env
+    # One "business day" lasts 60 seconds: the 15-day deadline is 15 minutes.
+    DAY_SECONDS: "60"
+    # Lesson 2: where every service sends its traces and logs.
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
+    # Lesson 2, head sampling: by default every trace is kept. To keep one
+    # in ten, put these two lines in `.env`:
+    #   OTEL_TRACES_SAMPLER=parentbased_traceidratio
+    #   OTEL_TRACES_SAMPLER_ARG=0.1
+    # The first service of a complaint (world) decides; every later one
+    # follows the decision carried in the `traceparent` header.
+    OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_always_on}
+    OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
+  restart: unless-stopped
+  depends_on:
+    redis:
+      condition: service_healthy
+
+# An HTTP service is "healthy" once its API documentation page answers.
+x-healthy: &healthy
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')"]
+    interval: 5s
+    timeout: 3s
+    retries: 20
+
+services:
+
+  # The queues, the complaints' state and the incident switches.
+  redis:
+    image: redis:8.8.4       # pinned: an upgrade is a decision, not an accident
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # The stand-in for the Anthropic API (lab/llm_stub.py). Not a model.
+  llm:
+    <<: [*python, *healthy]
+    command: uvicorn lab.llm_stub:app --host 0.0.0.0 --port 8000
+
+  # The platform: receive, triage, draft, report.
+  gateway:
+    <<: [*python, *healthy]
+    command: uvicorn lab.gateway:app --host 0.0.0.0 --port 8000
+    ports:
+      # Your machine's port 8400 reaches the gateway's 8000, so you can call
+      # the API from a browser or a terminal.
+      - "${GATEWAY_PORT:-8400}:8000"
+
+  triage:
+    <<: *python
+    command: python -m lab.triage
+    # LLM_MODE=real and a key in a `.env` file switch to a real model (README).
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      llm: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  drafter:
+    <<: [*python, *healthy]
+    command: uvicorn lab.drafter:app --host 0.0.0.0 --port 8000
+    env_file:
+      - path: .env
+        required: false
+
+  # The nightly regulatory report. A "night" is five minutes here.
+  report:
+    <<: *python
+    command: python -m lab.report
+
+  # The world: customers writing in, agents answering, the dispatch desk,
+  # and the regulator's 15-day clock.
+  world:
+    <<: *python
+    command: python -m lab.world
+    environment:
+      <<: *env               # the shared variables above, then its own
+      # Complaints per second. A real model on a laptop needs far fewer:
+      # RATE=0.1 in `.env` (the lab's README, "A real model").
+      RATE: ${RATE:-2}
+      DESK_RATE: "0.2"       # complaints the dispatch desk re-routes per second
+    depends_on:
+      gateway: {condition: service_healthy}
+      drafter: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  # Lesson 2: traces and logs. Every service sends both to the collector,
+  # which sends traces to Tempo (and the LLM spans to Phoenix) and logs to Loki.
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.165.0
+    restart: unless-stopped
+    # Lesson 2, tail sampling: `COLLECTOR_CONFIG=tail-sampling.yaml` in `.env`
+    # starts the collector with the other file in `collector/`.
+    command: ["--config=/etc/otelcol/${COLLECTOR_CONFIG:-config.yaml}"]
+    volumes:
+      - ./collector:/etc/otelcol:ro
+    depends_on:
+      - tempo
+      - loki
+      - phoenix
+
+  # The trace store. Read through Grafana (Explore, data source "Tempo").
+  tempo:
+    image: grafana/tempo:2.10.10
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+
+  # The log store, with its own default single-machine configuration.
+  loki:
+    image: grafana/loki:3.7.10
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+
+  # LLM-specific tracing: prompts, answers, tokens and cost per call.
+  # Free to self-host; source-available (Elastic License 2.0), not open source.
+  phoenix:
+    image: arizephoenix/phoenix:version-21.1.0
+    restart: unless-stopped
+    environment:
+      # Phoenix 21 asks every sender for a key by default. On your own
+      # laptop, behind the lab's network, it does not need one; on a server
+      # anyone else can reach, it would.
+      PHOENIX_ENABLE_AUTH: "false"
+      # Keep the lab's promise that nothing leaves your machine: no usage
+      # statistics sent to Arize.
+      PHOENIX_TELEMETRY_ENABLED: "false"
+      PHOENIX_LOG_SQL: "false"
+    ports:
+      - "${PHOENIX_PORT:-6006}:6006"
+
+  # Collects every service's /metrics every 5 seconds and evaluates the SLO
+  # rules in prometheus/rules.yml.
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+
+  # Dashboards. Sign-in is switched off: acceptable on your own laptop,
+  # never on a machine anyone else can reach.
+  grafana:
+    # Not the -slim tag: it leaves out the Prometheus data source (checked 2026-11-05).
+    image: grafana/grafana:13.3.0
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus-data:
+  tempo-data:

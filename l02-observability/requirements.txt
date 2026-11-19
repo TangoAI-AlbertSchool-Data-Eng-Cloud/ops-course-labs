@@ -1,0 +1,17 @@
+# The lab's Python packages, pinned so every laptop builds the same image.
+# Lesson 1's set, resolved on 2026-11-05 in python:3.12-slim.
+fastapi==0.162.0
+uvicorn==0.54.0
+httpx==0.28.1
+redis==8.1.0
+prometheus-client==0.26.0
+# The real Anthropic SDK: in stub mode it talks to the lab's stand-in server.
+anthropic==2.5.0
+# Lesson 2: OpenTelemetry, checked on PyPI 2026-11-16. The SDK and the
+# exporter share one version; the instrumentations ship together as 0.xxb.
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-instrumentation-fastapi==0.66b2
+opentelemetry-instrumentation-httpx==0.66b2
+# LLM spans for the anthropic SDK, in OpenInference's conventions (Arize).
+openinference-instrumentation-anthropic==3.3.5

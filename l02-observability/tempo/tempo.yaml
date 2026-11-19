@@ -1,0 +1,30 @@
+# Tempo, the trace store: one process, traces kept on local disk for a day.
+# In production it runs as several services over object storage; on a
+# laptop, one binary and a folder do the same job.
+
+# Lets Grafana stream search results as they are found, instead of waiting.
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200        # Grafana queries it here
+
+# The distributor is the front door: it receives spans and spreads them out.
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317   # the collector sends here, over gRPC
+
+storage:
+  trace:
+    backend: local              # a folder, instead of a cloud bucket
+    wal:
+      path: /var/tempo/wal      # write-ahead log: spans land here first
+    local:
+      path: /var/tempo/blocks   # then are packed into blocks, kept here
+
+# The compactor merges small blocks into larger ones and deletes old ones.
+compactor:
+  compaction:
+    block_retention: 24h       # a lab's day; production keeps weeks

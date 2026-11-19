@@ -1,0 +1,6 @@
+# Holds API keys and port choices: never committed.
+.env
+__pycache__/
+# The teacher's prepared demo dashboard, copied in before a demo so that it
+# survives `docker compose down`: never committed, never published.
+grafana/dashboards/observability.json

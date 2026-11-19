@@ -1,0 +1,9 @@
+# Load every dashboard JSON found in /var/lib/grafana/dashboards
+# (grafana/dashboards in this folder).
+apiVersion: 1
+providers:
+  - name: lab
+    folder: Lab
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

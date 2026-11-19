@@ -1,0 +1,41 @@
+# Lesson 2: traces (Tempo) and logs (Loki), linked both ways by the trace id.
+# Provisioned from this file, like the Prometheus data source next to it,
+# so nothing has to be clicked together after `docker compose up`.
+apiVersion: 1
+datasources:
+  # Traces. In Grafana: Explore, then pick "Tempo" at the top.
+  - name: Tempo
+    uid: tempo                  # other data sources link to it by this id
+    type: tempo
+    access: proxy               # Grafana's server calls Tempo, not your browser
+    url: http://tempo:3200      # its name on the compose network
+    jsonData:
+      # From a span, "Logs for this span" opens Loki on the same trace id.
+      tracesToLogsV2:
+        datasourceUid: loki
+        filterByTraceID: true
+        # Look a little before and after the span: log lines and spans are
+        # timestamped by different processes.
+        spanStartTimeShift: "-5m"
+        spanEndTimeShift: "5m"
+      # Draws a trace's services as a graph, beside the usual timeline.
+      nodeGraph:
+        enabled: true
+  # Logs. In Grafana: Explore, then pick "Loki".
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      # A log record's trace_id (sent over OTLP as "structured metadata",
+      # not as a label: a label per trace id would be incident I4 again)
+      # becomes a link that opens the trace in Tempo.
+      derivedFields:
+        - name: trace_id
+          matcherType: label
+          matcherRegex: trace_id
+          datasourceUid: tempo
+          # `$$` writes one `$` here: Grafana fills in the field's value.
+          url: "$${__value.raw}"
+          urlDisplayLabel: "Open the trace"

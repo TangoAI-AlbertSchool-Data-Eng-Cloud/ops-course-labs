@@ -1,0 +1,13 @@
+# Grafana reads its data from the lab's Prometheus. Provisioned from this file
+# so nothing has to be clicked together after `docker compose up`.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090   # its name on the compose network, not localhost
+    isDefault: true
+    jsonData:
+      # Matches the scrape interval, so Grafana's rate() windows fit the data.
+      timeInterval: 5s
